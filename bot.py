@@ -21,10 +21,15 @@ def fetch_html() -> str:
     r = requests.get(
         URL,
         timeout=30,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; dtek-schedule-bot/1.0)"}
+        headers={"User-Agent": "Mozilla/5.0 (compatible; dtek-schedule-bot/1.0)"},
+        allow_redirects=True,
     )
-    r.raise_for_status()
-    return r.text
+    print("HTTP:", r.status_code)
+    print("Final URL:", r.url)
+    print("Content-Type:", r.headers.get("content-type"))
+    text = r.text
+    print("HTML head (first 4000 chars):\n", text[:4000])
+    return text
 
 
 def extract_fact(html: str) -> dict:
