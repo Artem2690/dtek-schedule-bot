@@ -2,31 +2,61 @@ name: Daily forecast to Telegram
 
 on:
   schedule:
-    # GitHub Actions cron = UTC.
-    # 07:00 UTC взимку ~ 09:00 Kyiv (але перевір на свій час).
+    # GitHub cron = UTC
     - cron: "0 7 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Run script
+      # Діагностика: перевіряємо, що секрети реально підставилися (без виводу токенів)
+      - name: Validate required env
         env:
           WEATHER_URL: ${{ secrets.WEATHER_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          def req(name):
+              v = os.getenv(name, "").strip()
+              if not v:
+                  raise SystemExit(f"Missing/empty env: {name}. Check GitHub Secrets.")
+              return v
+
+          weather = req("WEATHER_URL")
+          # Безпечно показати тільки URL (це не секрет)
+          print("WEATHER_URL =", repr(weather))
+
+          # Токени не друкуємо, лише перевіряємо, що вони існують
+          req("TELEGRAM_BOT_TOKEN")
+          req("TELEGRAM_CHAT_ID")
+          print("Telegram env vars: OK")
+          PY
+
+      - name: Run bot
+        env:
+          WEATHER_URL: ${{ secrets.WEATHER_URL }}
+          # CHART_SELECTOR можна не створювати — якщо немає, буде пусто
           CHART_SELECTOR: ${{ secrets.CHART_SELECTOR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
