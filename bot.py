@@ -10,8 +10,18 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 def send_photo(path: str, caption: str = ""):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     with open(path, "rb") as f:
-        r = requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"photo": f})
-    r.raise_for_status()
+        r = requests.post(
+            url,
+            data={"chat_id": CHAT_ID, "caption": caption},
+            files={"photo": f},
+            timeout=60,
+        )
+
+    if not r.ok:
+        # Telegram повертає JSON з описом помилки
+        print("Telegram status:", r.status_code)
+        print("Telegram response:", r.text)
+        r.raise_for_status()
 
 def main():
     screenshot_path = "forecast.png"
