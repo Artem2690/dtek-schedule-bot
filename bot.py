@@ -33,7 +33,7 @@ def main():
 
         script_text = page.evaluate("""
         () => {
-          const scripts = Array.from(document.querySelectorAll("body script"));
+          const scripts = Array.from(document.querySelectorAll("body ul"));
           if (!scripts.length) return null;
           return scripts[scripts.length - 1].textContent;
         }
