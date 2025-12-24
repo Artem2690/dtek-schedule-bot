@@ -38,7 +38,7 @@ def main():
             el.screenshot(path=screenshot_path)
         else:
             # Фолбек: скрін усієї сторінки
-            page.screenshot(path=screenshot_path, full_page=True)
+            page.screenshot(path=screenshot_path, full_page=False)
 
         browser.close()
 
