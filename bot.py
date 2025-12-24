@@ -1,54 +1,57 @@
 import os
 import requests
 from playwright.sync_api import sync_playwright
+from datetime import datetime
 
-WEATHER_URL = os.environ["WEATHER_URL"]            # сторінка з графіком
-CHART_SELECTOR = os.environ.get("CHART_SELECTOR", "")# CSS-селектор графіка (опційно)
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+WEATHER_URL = os.environ.get("WEATHER_URL", "").strip()
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-def send_photo(path: str, caption: str = ""):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
+    raise RuntimeError("Missing env vars")
+
+def send_document(path: str, caption: str = ""):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     with open(path, "rb") as f:
         r = requests.post(
             url,
             data={"chat_id": CHAT_ID, "caption": caption},
-            files={"photo": f},
+            files={"document": f},
             timeout=60,
         )
-
     if not r.ok:
-        # Telegram повертає JSON з описом помилки
         print("Telegram status:", r.status_code)
         print("Telegram response:", r.text)
         r.raise_for_status()
 
 def main():
-    screenshot_path = "forecast.png"
-
-   with sync_playwright() as p:
+    with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 720})
+
         page.goto(WEATHER_URL, wait_until="domcontentloaded", timeout=90_000)
 
-        script_text = page.evaluate("""
+        # беремо останній <ul> у body
+        ul_text = page.evaluate("""
         () => {
-          const scripts = Array.from(document.querySelectorAll("body ul"));
-          if (!scripts.length) return null;
-          return scripts[scripts.length - 1].textContent;
+            const els = Array.from(document.querySelectorAll("body ul"));
+            if (!els.length) return null;
+            return els[els.length - 1].innerText;
         }
         """)
 
         browser.close()
 
-    if not script_text or not script_text.strip():
-        raise RuntimeError("Last <script> not found or empty")
+    if not ul_text or not ul_text.strip():
+        raise RuntimeError("Last <ul> not found or empty")
 
-    out_path = "dtek_raw_script.txt"
+    ts = datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
+    out_path = f"page_ul_{ts}.txt"
+
     with open(out_path, "w", encoding="utf-8") as f:
-        f.write(script_text.strip())
+        f.write(ul_text.strip())
 
-    send_document(out_path, caption="DTEK raw schedule script")
+    send_document(out_path, caption="Last <ul> content")
 
 if __name__ == "__main__":
     main()
