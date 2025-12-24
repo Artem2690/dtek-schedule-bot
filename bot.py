@@ -29,7 +29,8 @@ def main():
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 720})
 
-        page.goto(WEATHER_URL, wait_until="domcontentloaded", timeout=90_000)
+        page.goto(WEATHER_URL, wait_until="networkidle", timeout=90_000)
+        page.wait_for_timeout(1000)
 
         # беремо останній <ul> у body
         ul_text = page.evaluate("""
