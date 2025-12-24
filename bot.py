@@ -2,7 +2,7 @@ import os
 import requests
 from playwright.sync_api import sync_playwright
 
-WEATHER_URL = os.environ["WEATHER_URL"]              # сторінка з графіком
+WEATHER_URL = "https://www.php.net"              # сторінка з графіком
 CHART_SELECTOR = os.environ.get("CHART_SELECTOR", "")# CSS-селектор графіка (опційно)
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
