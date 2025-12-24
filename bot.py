@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import requests
 from playwright.sync_api import sync_playwright
@@ -20,34 +19,25 @@ def send_document(path: str, caption: str = ""):
         print("Telegram response:", r.text)
         r.raise_for_status()
 
-def extract_fact_from_html(html: str) -> dict:
-    # 1) Витягуємо "DisconSchedule.fact = { ... }" (останній script або будь-який у HTML)
-    m = re.search(r"DisconSchedule\.fact\s*=\s*(\{.*?\})\s*</script>", html, flags=re.S)
-    if not m:
-        raise RuntimeError("Cannot find DisconSchedule.fact in page HTML")
-
-    obj_text = m.group(1)
-
-    # 2) Прибираємо JS-коментарі/зайві коми на всяк випадок (у твоєму прикладі є коми після блоків)
-    #    Дозволимо trailing commas: видалимо коми перед } або ]
-    obj_text = re.sub(r",(\s*[}\]])", r"\1", obj_text)
-
-    # 3) Парсимо як JSON
-    return json.loads(obj_text)
-
 def main():
+    out_path = "dtek_fact.json"
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 720})
-        page.goto(WEATHER_URL, wait_until="networkidle", timeout=90_000)
 
-        html = page.content()
+        page.goto(WEATHER_URL, wait_until="domcontentloaded", timeout=90_000)
+
+        # Чекаємо, поки об'єкт з'явиться у window
+        page.wait_for_function(
+            "() => window.DisconSchedule && window.DisconSchedule.fact && window.DisconSchedule.fact.data",
+            timeout=60_000
+        )
+
+        fact = page.evaluate("() => window.DisconSchedule.fact")
         browser.close()
 
-    fact = extract_fact_from_html(html)
-
-    # Збережемо красивим JSON для історії/статистики
-    out_path = "dtek_fact.json"
+    # Збережемо у файл
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(fact, f, ensure_ascii=False, indent=2)
 
