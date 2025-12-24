@@ -1,4 +1,6 @@
 import os
+import re
+import json
 import requests
 from playwright.sync_api import sync_playwright
 from datetime import datetime
@@ -8,7 +10,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
-    raise RuntimeError("Missing env vars")
+    raise RuntimeError("Missing env vars (WEATHER_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
 
 def send_document(path: str, caption: str = ""):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
@@ -24,35 +26,65 @@ def send_document(path: str, caption: str = ""):
         print("Telegram response:", r.text)
         r.raise_for_status()
 
+def extract_fact_from_script(script_text: str) -> dict:
+    """
+    Очікуємо формат на кшталт:
+      DisconSchedule.fact = { ... }
+    """
+    # Витягнути об'єкт {...} після "DisconSchedule.fact ="
+    m = re.search(r"DisconSchedule\.fact\s*=\s*(\{.*\})\s*;?\s*$", script_text.strip(), flags=re.S)
+    if not m:
+        raise RuntimeError("Found script, but it does not match 'DisconSchedule.fact = { ... }'")
+
+    obj_text = m.group(1)
+
+    # Прибираємо trailing commas перед } або ]
+    obj_text = re.sub(r",(\s*[}\]])", r"\1", obj_text)
+
+    return json.loads(obj_text)
+
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 720})
 
         page.goto(WEATHER_URL, wait_until="networkidle", timeout=90_000)
-        page.wait_for_timeout(15000)
 
-        # беремо останній <ul> у body
-        ul_text = page.evaluate("""
+        # 1) Правильне очікування: чекаємо, поки у document.scripts з'явиться текст з DisconSchedule.fact
+        # Якщо твій сайт "повільний", збільш timeout до 120_000
+        try:
+            page.wait_for_function(
+                "() => Array.from(document.scripts).some(s => (s.textContent || '').includes('DisconSchedule.fact'))",
+                timeout=60_000
+            )
+        except Exception:
+            # 2) Fallback на твій робочий "sleep", якщо сайт інколи довго віддає потрібний script
+            page.wait_for_timeout(15000)
+
+        # Забираємо саме той <script>, де є DisconSchedule.fact
+        script_text = page.evaluate("""
         () => {
-            const els = Array.from(document.querySelectorAll("body script"));
-            if (!els.length) return null;
-            return els[els.length - 1].innerText;
+            const scripts = Array.from(document.scripts);
+            const s = scripts.find(x => (x.textContent || '').includes('DisconSchedule.fact'));
+            return s ? s.textContent : null;
         }
         """)
 
         browser.close()
 
-    if not ul_text or not ul_text.strip():
-        raise RuntimeError("Last <ul> not found or empty")
+    if not script_text or not script_text.strip():
+        raise RuntimeError("Cannot find script containing 'DisconSchedule.fact' (maybe URL is not the expected page)")
+
+    fact = extract_fact_from_script(script_text)
 
     ts = datetime.utcnow().strftime("%Y-%m-%d_%H-%M")
-    out_path = f"page_ul_{ts}.txt"
+    out_path = f"dtek_fact_{ts}.json"
 
     with open(out_path, "w", encoding="utf-8") as f:
-        f.write(ul_text.strip())
+        json.dump(fact, f, ensure_ascii=False, indent=2)
 
-    send_document(out_path, caption="Last <ul> content")
+    caption = f"DTEK fact update: {fact.get('update', 'unknown')}"
+    send_document(out_path, caption=caption)
 
 if __name__ == "__main__":
     main()
