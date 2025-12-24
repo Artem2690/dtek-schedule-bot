@@ -34,7 +34,7 @@ def main():
         # беремо останній <ul> у body
         ul_text = page.evaluate("""
         () => {
-            const els = Array.from(document.querySelectorAll("body ul"));
+            const els = Array.from(document.querySelectorAll("body script"));
             if (!els.length) return null;
             return els[els.length - 1].innerText;
         }
