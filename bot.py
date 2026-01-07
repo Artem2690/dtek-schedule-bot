@@ -147,10 +147,8 @@ def build_message(fact: dict) -> tuple[str, str]:
     schedule = format_schedule_halfhour(gpv)
     return header, schedule
 
-def schedule_hash(header: str, schedule: str) -> str:
-    # Hash only the schedule (and group/day header), not Telegram formatting noise
-    payload = header + "\n\n" + schedule
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def schedule_hash(schedule: str) -> str:
+    return hashlib.sha256(schedule.encode("utf-8")).hexdigest()
 
 # ========== STATE ==========
 def load_state() -> dict:
@@ -204,7 +202,7 @@ def main():
 
     fact = fetch_fact()
     header, schedule = build_message(fact)
-    h = schedule_hash(header, schedule)
+    h = schedule_hash(schedule)
 
     # Rule A: send at/after 08:00 Kyiv once per day (first run after 08:00)
     # We treat "daily send window" as 08:00–23:59.
