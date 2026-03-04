@@ -235,11 +235,11 @@ def main():
 
     # Rule B: send on changes anytime (after we have ever sent something)
     changed = (state.get("last_hash") != "") and (h != state.get("last_hash"))
+    send_to_firebase(schedule_list)
 
     if should_send_daily:
         msg = header + "\n\n" + schedule
         tg_send_message(msg)
-        send_to_firebase(schedule_list)
         state["last_hash"] = h
         state["last_sent_date"] = today_str
         save_state(state)
@@ -249,7 +249,6 @@ def main():
     if changed:
         msg = "<b>Графік змінився</b>\n\n" + header + "\n\n" + schedule
         tg_send_message(msg)
-        send_to_firebase(schedule_list)
         state["last_hash"] = h
         save_state(state)
         print("Sent updated schedule.")
