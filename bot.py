@@ -23,7 +23,7 @@ if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
     raise RuntimeError("Missing env vars (WEATHER_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
 
 # Random delay: 0..8 minutes (to make checks not exactly every 30 minutes)
-RANDOM_DELAY_SECONDS = int(os.environ.get("RANDOM_DELAY_SECONDS", "480"))  # 8 min default
+RANDOM_DELAY_SECONDS = int(os.environ.get("RANDOM_DELAY_SECONDS", "180"))  # 3 min default
 
 # ========== TELEGRAM ==========
 def tg_send_message(text: str) -> dict:
@@ -215,7 +215,7 @@ def send_to_firebase(data: list):
 
 # ========== MAIN ==========
 def main():
-    # randomize interval: 30..38 minutes total (cron every 30 min + random sleep up to 8 min)
+    # randomize interval: 5..8 minutes total (cron every 5 min + random sleep up to 3 min)
     if RANDOM_DELAY_SECONDS > 0:
         delay = random.randint(0, RANDOM_DELAY_SECONDS)
         time.sleep(delay)
