@@ -218,6 +218,7 @@ def main():
     # randomize interval: 5..8 minutes total (cron every 5 min + random sleep up to 3 min)
     if RANDOM_DELAY_SECONDS > 0:
         delay = random.randint(0, RANDOM_DELAY_SECONDS)
+        print("Delay = ", delay)
         time.sleep(delay)
 
     now_kyiv = datetime.now(KYIV_TZ)
