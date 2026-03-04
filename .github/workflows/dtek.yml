@@ -2,7 +2,7 @@ name: DTEK schedule monitor
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -34,7 +34,8 @@ jobs:
           WEATHER_URL: ${{ secrets.WEATHER_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RANDOM_DELAY_SECONDS: "480"   # 0..480 sec => 0..8 min
+          FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
+          RANDOM_DELAY_SECONDS: "180"   # 0..180 sec => 0..3 min
         run: |
           python bot.py
 

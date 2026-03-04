@@ -17,12 +17,13 @@ STATE_FILE = "state.json"
 WEATHER_URL = os.environ.get("WEATHER_URL", "").strip()
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+FIREBASE_URL = os.environ.get("FIREBASE_URL", "").strip()
 
 if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
     raise RuntimeError("Missing env vars (WEATHER_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
 
 # Random delay: 0..8 minutes (to make checks not exactly every 30 minutes)
-RANDOM_DELAY_SECONDS = int(os.environ.get("RANDOM_DELAY_SECONDS", "480"))  # 8 min default
+RANDOM_DELAY_SECONDS = int(os.environ.get("RANDOM_DELAY_SECONDS", "180"))  # 3 min default
 
 # ========== TELEGRAM ==========
 def tg_send_message(text: str) -> dict:
@@ -58,7 +59,7 @@ def extract_fact_from_script(script_text: str) -> dict:
     return json.loads(obj_text)
 
 # ========== SCHEDULE FORMATTING (30-min precision) ==========
-def format_schedule_halfhour(day_gpv: dict) -> str:
+def format_schedule_halfhour(day_gpv: dict) -> tuple[str, list]:
     """
     day_gpv: {"1":"yes"/"no"/"first"/"second", ... "24":...}
     Interpret hour h as interval (h-1):00 -> h:00.
@@ -113,11 +114,21 @@ def format_schedule_halfhour(day_gpv: dict) -> str:
     out.append((start, 48, cur))
 
     lines = []
-    for a, b, v in out:
-        lines.append(f"{t(a)}–{t(b)} — {icon(v)} {v}")
-    return "\n".join(lines)
+    json_data = []
 
-def build_message(fact: dict) -> tuple[str, str]:
+    for a, b, v in out:
+        time_range = f"{t(a)}–{t(b)}"
+
+        lines.append(f"{time_range} — {icon(v)} {v}")
+
+        json_data.append({
+            "time": time_range,
+            "value": v
+        })
+
+    return "\n".join(lines), json_data
+
+def build_message(fact: dict) -> tuple[str, str, list]:
     """
     Returns (header_text, schedule_text)
     """
@@ -144,8 +155,8 @@ def build_message(fact: dict) -> tuple[str, str]:
         f"Останнє оновлення: {update}\n"
         f"Група: {GROUP}"
     )
-    schedule = format_schedule_halfhour(gpv)
-    return header, schedule
+    schedule_text, schedule_list = format_schedule_halfhour(gpv)
+    return header, schedule_text, schedule_list
 
 def schedule_hash(schedule: str) -> str:
     return hashlib.sha256(schedule.encode("utf-8")).hexdigest()
@@ -188,9 +199,23 @@ def fetch_fact() -> dict:
         raise RuntimeError("Cannot find DisconSchedule.fact script")
     return extract_fact_from_script(script_text)
 
+# ========== FIREBASE ==========
+def send_to_firebase(data: list):
+    try:
+        payload = {
+            "mode": "edit",
+            "list": data
+        }
+        print(f"Sending data to Firebase...")
+        response = requests.put(FIREBASE_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        print("Firebase updated successfully ✅")
+    except Exception as e:
+        print(f"Firebase Error ❌: {e}")
+
 # ========== MAIN ==========
 def main():
-    # randomize interval: 30..38 minutes total (cron every 30 min + random sleep up to 8 min)
+    # randomize interval: 5..8 minutes total (cron every 5 min + random sleep up to 3 min)
     if RANDOM_DELAY_SECONDS > 0:
         delay = random.randint(0, RANDOM_DELAY_SECONDS)
         time.sleep(delay)
@@ -201,7 +226,7 @@ def main():
     state = load_state()
 
     fact = fetch_fact()
-    header, schedule = build_message(fact)
+    header, schedule, schedule_list = build_message(fact)
     h = schedule_hash(schedule)
 
     # Rule A: send at/after 08:00 Kyiv once per day (first run after 08:00)
@@ -214,6 +239,7 @@ def main():
     if should_send_daily:
         msg = header + "\n\n" + schedule
         tg_send_message(msg)
+        send_to_firebase(schedule_list)
         state["last_hash"] = h
         state["last_sent_date"] = today_str
         save_state(state)
@@ -223,6 +249,7 @@ def main():
     if changed:
         msg = "<b>Графік змінився</b>\n\n" + header + "\n\n" + schedule
         tg_send_message(msg)
+        send_to_firebase(schedule_list)
         state["last_hash"] = h
         save_state(state)
         print("Sent updated schedule.")
