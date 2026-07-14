@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import json
@@ -26,7 +28,7 @@ if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
 RANDOM_DELAY_SECONDS = int(os.environ.get("RANDOM_DELAY_SECONDS", "180"))  # 3 min default
 
 # ========== TELEGRAM ==========
-def tg_send_message(text: str) -> dict:
+def tg_send_message(text: str, *, disable_notification: bool = False) -> dict:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     r = requests.post(
         url,
@@ -35,6 +37,7 @@ def tg_send_message(text: str) -> dict:
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
+            "disable_notification": disable_notification,
         },
         timeout=60,
     )
@@ -128,9 +131,9 @@ def format_schedule_halfhour(day_gpv: dict) -> tuple[str, list]:
 
     return "\n".join(lines), json_data
 
-def build_message(fact: dict) -> tuple[str, str, list]:
+def build_message(fact: dict) -> tuple[str, str, list] | None:
     """
-    Returns (header_text, schedule_text)
+    Returns (header_text, schedule_text, schedule_list) or None if no data for today.
     """
     today = fact.get("today")
     update = fact.get("update", "unknown")
@@ -141,7 +144,8 @@ def build_message(fact: dict) -> tuple[str, str, list]:
 
     day_key = str(today)
     if day_key not in data:
-        raise RuntimeError(f"No data for today={day_key}")
+        print(f"No data for today={day_key}")
+        return None
 
     day_obj = data[day_key]
     if GROUP not in day_obj:
@@ -227,7 +231,20 @@ def main():
     state = load_state()
 
     fact = fetch_fact()
-    header, schedule, schedule_list = build_message(fact)
+    result = build_message(fact)
+    if result is None:
+        today = fact.get("today")
+        if today:
+            date_str = datetime.fromtimestamp(int(today), KYIV_TZ).strftime("%d.%m.%Y")
+        else:
+            date_str = today_str
+        tg_send_message(
+            f"Немає даних графіку на {date_str}",
+            disable_notification=True,
+        )
+        print("Sent silent no-data notification.")
+        return
+    header, schedule, schedule_list = result
     h = schedule_hash(schedule)
 
     # Rule A: send at/after 08:00 Kyiv once per day (first run after 08:00)
