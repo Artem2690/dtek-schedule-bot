@@ -171,6 +171,7 @@ def load_state() -> dict:
         return {
             "last_hash": "",
             "last_sent_date": "",  # YYYY-MM-DD Kyiv
+            "last_no_data_date": "",  # YYYY-MM-DD Kyiv
         }
     with open(STATE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -235,13 +236,21 @@ def main():
     if result is None:
         today = fact.get("today")
         if today:
-            date_str = datetime.fromtimestamp(int(today), KYIV_TZ).strftime("%d.%m.%Y")
+            date_dt = datetime.fromtimestamp(int(today), KYIV_TZ)
+            date_str = date_dt.strftime("%d.%m.%Y")
+            date_key = date_dt.strftime("%Y-%m-%d")
         else:
             date_str = today_str
+            date_key = today_str
+        if state.get("last_no_data_date") == date_key:
+            print(f"No-data notification already sent for {date_str}.")
+            return
         tg_send_message(
             f"Немає даних графіку на {date_str}",
             disable_notification=True,
         )
+        state["last_no_data_date"] = date_key
+        save_state(state)
         print("Sent silent no-data notification.")
         return
     header, schedule, schedule_list = result
