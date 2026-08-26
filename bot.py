@@ -172,6 +172,7 @@ def load_state() -> dict:
             "last_hash": "",
             "last_sent_date": "",  # YYYY-MM-DD Kyiv
             "last_no_data_date": "",  # YYYY-MM-DD Kyiv
+            "last_gym_reminder_date": "",  # YYYY-MM-DD Kyiv
         }
     with open(STATE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -218,6 +219,17 @@ def send_to_firebase(data: list):
     except Exception as e:
         print(f"Firebase Error ❌: {e}")
 
+# ========== GYM REMINDER ==========
+def maybe_send_gym_reminder(state: dict, today_str: str, now_kyiv: datetime) -> None:
+    if now_kyiv.hour < 18:
+        return
+    if state.get("last_gym_reminder_date") == today_str:
+        return
+    tg_send_message("Ти в залі був гандошка?")
+    state["last_gym_reminder_date"] = today_str
+    save_state(state)
+    print("Sent gym reminder.")
+
 # ========== MAIN ==========
 def main():
     # randomize interval: 5..8 minutes total (cron every 5 min + random sleep up to 3 min)
@@ -230,6 +242,7 @@ def main():
     today_str = now_kyiv.strftime("%Y-%m-%d")
 
     state = load_state()
+    maybe_send_gym_reminder(state, today_str, now_kyiv)
 
     fact = fetch_fact()
     result = build_message(fact)
