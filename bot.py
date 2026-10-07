@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import os
-import re
 import json
-import time
-import random
 import hashlib
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, date
+from html import escape
 from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright
 
@@ -21,192 +19,156 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 FIREBASE_URL = os.environ.get("FIREBASE_URL", "").strip()
 
-if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
-    raise RuntimeError("Missing env vars (WEATHER_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
-
-# Random delay: 0..8 minutes (to make checks not exactly every 30 minutes)
-RANDOM_DELAY_SECONDS = int(os.environ.get("RANDOM_DELAY_SECONDS", "180"))  # 3 min default
-
 # ========== TELEGRAM ==========
-def tg_send_message(text: str, *, disable_notification: bool = False) -> dict:
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    r = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-            "disable_notification": disable_notification,
-        },
-        timeout=60,
+class TelegramError(RuntimeError):
+    def __init__(self, code: int, description: str):
+        super().__init__(f"Telegram {code}: {description}")
+        self.code = code
+        self.description = description
+
+
+def tg_call(method: str, payload: dict) -> dict:
+    response = requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+        json={"chat_id": CHAT_ID, **payload}, timeout=60,
     )
-    if not r.ok:
-        print("Telegram status:", r.status_code)
-        print("Telegram response:", r.text)
-        r.raise_for_status()
-    return r.json()
+    body = response.json()
+    if not body.get("ok"):
+        raise TelegramError(body.get("error_code", response.status_code),
+                            body.get("description", "Unknown error"))
+    response.raise_for_status()
+    return body
 
-# ========== FACT PARSING ==========
-def extract_fact_from_script(script_text: str) -> dict:
-    m = re.search(
-        r"DisconSchedule\.fact\s*=\s*(\{.*\})\s*;?\s*$",
-        script_text.strip(),
-        flags=re.S,
-    )
-    if not m:
-        raise RuntimeError("Script does not contain DisconSchedule.fact")
 
-    obj_text = m.group(1)
-    obj_text = re.sub(r",(\s*[}\]])", r"\1", obj_text)  # remove trailing commas
-    return json.loads(obj_text)
+def tg_send_message(text: str, *, disable_notification: bool = False,
+                    reply_to: int | None = None) -> dict:
+    payload = {"text": text, "parse_mode": "HTML",
+               "link_preview_options": {"is_disabled": True},
+               "disable_notification": disable_notification}
+    if reply_to is not None:
+        payload["reply_parameters"] = {
+            "message_id": reply_to, "allow_sending_without_reply": True,
+        }
+    return tg_call("sendMessage", payload)
 
-# ========== SCHEDULE FORMATTING (30-min precision) ==========
+
+def tg_edit_message(message_id: int, text: str) -> None:
+    try:
+        tg_call("editMessageText", {"message_id": message_id, "text": text,
+                "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}})
+    except TelegramError as exc:
+        if exc.code == 400 and "message is not modified" in exc.description.lower():
+            return
+        raise
+
+
+# ========== SCHEDULE ==========
 def format_schedule_halfhour(day_gpv: dict) -> tuple[str, list]:
-    """
-    day_gpv: {"1":"yes"/"no"/"first"/"second", ... "24":...}
-    Interpret hour h as interval (h-1):00 -> h:00.
-    first/second are treated as half-hour transition at (h-1):30:
-      first half = prev yes/no, second half = next yes/no
-    """
-
-    def prev_yesno(h):
-        for hh in range(h - 1, 0, -1):
-            v = day_gpv.get(str(hh))
-            if v in ("yes", "no"):
-                return v
-        return "no"
-
-    def next_yesno(h):
-        for hh in range(h + 1, 25):
-            v = day_gpv.get(str(hh))
-            if v in ("yes", "no"):
-                return v
-        return prev_yesno(h)
-
-    slots = [None] * 48  # 48 half-hours
-
+    mapping = {"yes": ("yes", "yes"), "no": ("no", "no"),
+               "first": ("no", "yes"), "second": ("yes", "no")}
+    if set(day_gpv) != {str(h) for h in range(1, 25)}:
+        raise RuntimeError("Schedule must contain exactly 24 hours")
+    slots = []
     for h in range(1, 25):
-        v = day_gpv.get(str(h), "no")
-        i = (h - 1) * 2
-        if v in ("yes", "no"):
-            slots[i] = v
-            slots[i + 1] = v
-        elif v in ("first", "second"):
-            slots[i] = prev_yesno(h)
-            slots[i + 1] = next_yesno(h)
-        else:
-            slots[i] = "no"
-            slots[i + 1] = "no"
+        value = day_gpv[str(h)]
+        if value not in mapping:
+            raise RuntimeError(f"Unknown schedule value at hour {h}: {value!r}")
+        slots.extend(mapping[value])
 
-    def t(i):
-        m = i * 30
-        return f"{m // 60:02d}:{m % 60:02d}"
+    def clock(i):
+        return f"{i // 2:02d}:{(i % 2) * 30:02d}"
 
-    def icon(v):
-        return "✅" if v == "yes" else "❌"
-
-    out = []
+    result = []
     start = 0
-    cur = slots[0]
-    for i in range(1, 48):
-        if slots[i] != cur:
-            out.append((start, i, cur))
+    for i in range(1, 49):
+        if i == 48 or slots[i] != slots[start]:
+            result.append({"time": f"{clock(start)}–{clock(i)}", "value": slots[start]})
             start = i
-            cur = slots[i]
-    out.append((start, 48, cur))
+    labels = {"yes": "✅ Світло є", "no": "❌ Світла немає"}
+    text = "\n".join(f"{item['time']} — {labels[item['value']]}" for item in result)
+    return text, result
 
-    lines = []
-    json_data = []
 
-    for a, b, v in out:
-        time_range = f"{t(a)}–{t(b)}"
+def collect_days(fact: dict, today: date) -> dict:
+    # Use actual Kyiv calendar dates; fact.today may still point to yesterday.
+    raw_data = fact.get("data")
+    if not isinstance(raw_data, dict):
+        raise RuntimeError("fact.data missing or invalid")
+    by_date = {}
+    for timestamp, groups in raw_data.items():
+        key = datetime.fromtimestamp(int(timestamp), KYIV_TZ).date().isoformat()
+        if key in by_date:
+            raise RuntimeError(f"Duplicate schedule date: {key}")
+        by_date[key] = groups
+    days = {}
+    for target in (today, today + timedelta(days=1)):
+        key = target.isoformat()
+        groups = by_date.get(key, {})
+        hours = groups.get(GROUP)
+        if hours is None:
+            days[key] = None
+        else:
+            _, days[key] = format_schedule_halfhour(hours)
+    return days
 
-        lines.append(f"{time_range} — {icon(v)} {v}")
 
-        json_data.append({
-            "time": time_range,
-            "value": v
-        })
+def schedule_hash(day: list | None) -> str:
+    canonical = json.dumps(day, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    return "\n".join(lines), json_data
 
-def build_message(fact: dict) -> tuple[str, str, list] | None:
-    """
-    Returns (header_text, schedule_text, schedule_list) or None if no data for today.
-    """
-    today = fact.get("today")
-    update = fact.get("update", "unknown")
-    data = fact.get("data", {})
+def build_message(days: dict, today: date, update: str) -> str:
+    sections = [f"#розклад\n<b>Графіки відключень · {escape(GROUP)}</b>"]
+    for offset, label in ((0, "Сьогодні"), (1, "Завтра")):
+        target = today + timedelta(days=offset)
+        day = days[target.isoformat()]
+        text = "Графік ще не опубліковано." if day is None else "\n".join(
+            f"{item['time']} — " + ("✅ Світло є" if item['value'] == "yes" else "❌ Світла немає")
+            for item in day
+        )
+        sections.append(f"<b>{label}, {target:%d.%m.%Y}</b>\n{text}")
+    sections.append(f"Оновлення джерела: {escape(str(update))}")
+    return "\n\n".join(sections)
 
-    if not today:
-        raise RuntimeError("fact.today missing")
-
-    day_key = str(today)
-    if day_key not in data:
-        print(f"No data for today={day_key}")
-        return None
-
-    day_obj = data[day_key]
-    if GROUP not in day_obj:
-        raise RuntimeError(f"{GROUP} not found. Available: {', '.join(day_obj.keys())}")
-
-    gpv = day_obj[GROUP]
-    date_str = datetime.fromtimestamp(int(today), KYIV_TZ).strftime("%d.%m.%Y")
-
-    header = (
-        f"<b>Графік на {date_str}</b>\n"
-        f"Останнє оновлення: {update}\n"
-        f"Група: {GROUP}"
-    )
-    schedule_text, schedule_list = format_schedule_halfhour(gpv)
-    return header, schedule_text, schedule_list
-
-def schedule_hash(schedule: str) -> str:
-    return hashlib.sha256(schedule.encode("utf-8")).hexdigest()
 
 # ========== STATE ==========
 def load_state() -> dict:
     if not os.path.exists(STATE_FILE):
-        return {
-            "last_hash": "",
-            "last_sent_date": "",  # YYYY-MM-DD Kyiv
-            "last_no_data_date": "",  # YYYY-MM-DD Kyiv
-            "last_gym_reminder_date": "",  # YYYY-MM-DD Kyiv
-        }
+        return {}
     with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        state = json.load(f)
+    if not isinstance(state, dict):
+        raise RuntimeError("Invalid state.json")
+    return state  # Old fields remain compatible; no manual reset needed.
+
 
 def save_state(state: dict):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    temp = STATE_FILE + ".tmp"
+    with open(temp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp, STATE_FILE)
+
 
 # ========== FETCH FACT ==========
 def fetch_fact() -> dict:
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            page.goto(WEATHER_URL, wait_until="domcontentloaded", timeout=90_000)
+            page.wait_for_function("""() => typeof DisconSchedule !== 'undefined'
+                && DisconSchedule.fact && DisconSchedule.fact.data""", timeout=60_000)
+            return page.evaluate("() => DisconSchedule.fact")
+        finally:
+            browser.close()
 
-        page.goto(WEATHER_URL, wait_until="networkidle", timeout=90_000)
-
-        # Your known stable wait (site renders late)
-        page.wait_for_timeout(15000)
-
-        script_text = page.evaluate("""
-        () => {
-            const s = Array.from(document.scripts)
-              .find(x => (x.textContent || '').includes('DisconSchedule.fact'));
-            return s ? s.textContent : null;
-        }
-        """)
-        browser.close()
-
-    if not script_text:
-        raise RuntimeError("Cannot find DisconSchedule.fact script")
-    return extract_fact_from_script(script_text)
 
 # ========== FIREBASE ==========
 def send_to_firebase(data: list):
+    if not FIREBASE_URL:
+        return
     try:
         payload = {
             "mode": "edit",
@@ -219,82 +181,66 @@ def send_to_firebase(data: list):
     except Exception as e:
         print(f"Firebase Error ❌: {e}")
 
-# ========== GYM REMINDER ==========
-def maybe_send_gym_reminder(state: dict, today_str: str, now_kyiv: datetime) -> None:
-    if now_kyiv.hour < 18:
-        return
-    if state.get("last_gym_reminder_date") == today_str:
-        return
-    tg_send_message("Ти в залі був гандошка?")
-    state["last_gym_reminder_date"] = today_str
-    save_state(state)
-    print("Sent gym reminder.")
+# ========== DAILY MESSAGE ==========
+def flush_notifications(state: dict) -> None:
+    while state.get("pending_notifications"):
+        text = state["pending_notifications"][0]
+        tg_send_message(text, reply_to=state["daily_message_id"])
+        state["pending_notifications"].pop(0)
+        save_state(state)
 
-# ========== MAIN ==========
+
+def sync_daily_message(fact: dict, state: dict, now_kyiv: datetime) -> None:
+    today = now_kyiv.date()
+    if now_kyiv.hour == 0 and now_kyiv.minute < 1:
+        return  # Do not create the new day's message before 00:01.
+    days = collect_days(fact, today)
+    hashes = {key: schedule_hash(day) for key, day in days.items()}
+    message = build_message(days, today, fact.get("update", "невідомо"))
+    same_day = (state.get("daily_message_date") == today.isoformat()
+                and state.get("daily_message_chat_id") == CHAT_ID
+                and state.get("daily_message_group") == GROUP
+                and bool(state.get("daily_message_id")))
+    if not same_day:
+        sent = tg_send_message(message)
+        state.update(daily_message_date=today.isoformat(),
+                     daily_message_chat_id=CHAT_ID, daily_message_group=GROUP,
+                     daily_message_id=sent["result"]["message_id"],
+                     day_hashes=hashes, pending_notifications=[])
+        save_state(state)
+    else:
+        flush_notifications(state)
+        changed = [key for key in days if hashes[key] != state.get("day_hashes", {}).get(key)]
+        if changed:
+            try:
+                tg_edit_message(state["daily_message_id"], message)
+            except TelegramError as exc:
+                description = exc.description.lower()
+                if exc.code == 400 and ("message to edit not found" in description
+                                        or "message can't be edited" in description):
+                    sent = tg_send_message(message)
+                    state["daily_message_id"] = sent["result"]["message_id"]
+                else:
+                    raise
+            labels = ["сьогодні" if key == today.isoformat() else "завтра" for key in changed]
+            text = "⚡ Оновлено графік на " + " і ".join(labels) + ". Основне повідомлення актуалізовано."
+            state["day_hashes"] = hashes
+            state["pending_notifications"] = [text]
+            save_state(state)  # Persist edited state before attempting notification.
+            flush_notifications(state)
+    # Firebase keeps its original today-only payload for existing consumers.
+    if days[today.isoformat()] is not None:
+        send_to_firebase(days[today.isoformat()])
+
+
 def main():
-    # randomize interval: 5..8 minutes total (cron every 5 min + random sleep up to 3 min)
-    if RANDOM_DELAY_SECONDS > 0:
-        delay = random.randint(0, RANDOM_DELAY_SECONDS)
-        print("Delay = ", delay)
-        time.sleep(delay)
-
-    now_kyiv = datetime.now(KYIV_TZ)
-    today_str = now_kyiv.strftime("%Y-%m-%d")
-
+    if not WEATHER_URL or not BOT_TOKEN or not CHAT_ID:
+        raise RuntimeError("Missing env vars (WEATHER_URL / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
     state = load_state()
-    maybe_send_gym_reminder(state, today_str, now_kyiv)
-
     fact = fetch_fact()
-    result = build_message(fact)
-    if result is None:
-        today = fact.get("today")
-        if today:
-            date_dt = datetime.fromtimestamp(int(today), KYIV_TZ)
-            date_str = date_dt.strftime("%d.%m.%Y")
-            date_key = date_dt.strftime("%Y-%m-%d")
-        else:
-            date_str = today_str
-            date_key = today_str
-        if state.get("last_no_data_date") == date_key:
-            print(f"No-data notification already sent for {date_str}.")
-            return
-        tg_send_message(
-            f"Немає даних графіку на {date_str}",
-            disable_notification=True,
-        )
-        state["last_no_data_date"] = date_key
-        save_state(state)
-        print("Sent silent no-data notification.")
-        return
-    header, schedule, schedule_list = result
-    h = schedule_hash(schedule)
+    now_kyiv = datetime.now(KYIV_TZ)  # Fetch may cross midnight.
+    sync_daily_message(fact, state, now_kyiv)
 
-    # Rule A: send at/after 08:00 Kyiv once per day (first run after 08:00)
-    # We treat "daily send window" as 08:00–23:59.
-    should_send_daily = (now_kyiv.hour >= 8) and (state.get("last_sent_date") != today_str)
-
-    # Rule B: send on changes anytime (after we have ever sent something)
-    changed = (state.get("last_hash") != "") and (h != state.get("last_hash"))
-    send_to_firebase(schedule_list)
-
-    if should_send_daily:
-        msg = header + "\n\n" + schedule
-        tg_send_message(msg)
-        state["last_hash"] = h
-        state["last_sent_date"] = today_str
-        save_state(state)
-        print("Sent daily schedule.")
-        return
-
-    if changed:
-        msg = "<b>Графік змінився</b>\n\n" + header + "\n\n" + schedule
-        tg_send_message(msg)
-        state["last_hash"] = h
-        save_state(state)
-        print("Sent updated schedule.")
-        return
-
-    print("No changes; nothing sent.")
 
 if __name__ == "__main__":
     main()
