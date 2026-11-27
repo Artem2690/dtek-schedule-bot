@@ -3,13 +3,13 @@
   "last_sent_date": "2026-10-07",
   "last_no_data_date": "2026-09-08",
   "last_gym_reminder_date": "2026-10-06",
-  "daily_message_date": "2026-11-27",
+  "daily_message_date": "2026-11-28",
   "daily_message_chat_id": "-1003534397203",
   "daily_message_group": "GPV2.2",
-  "daily_message_id": 622,
+  "daily_message_id": 623,
   "day_hashes": {
-    "2026-11-27": "6a8453cf6958399b3478cccfbc659c42a3f3f10b952e947c0e92130901ff9edc",
-    "2026-11-28": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    "2026-11-28": "c35eeedbc28d959202ad4143bc5403d8e52bb3e00593864e3535a456078d4f00",
+    "2026-11-29": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
   },
   "pending_notifications": []
 }
